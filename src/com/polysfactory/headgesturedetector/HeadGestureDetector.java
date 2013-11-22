@@ -23,11 +23,18 @@ public class HeadGestureDetector implements SensorEventListener {
     private SensorManager mSensorManager;
 
     private OnHeadGestureListener mListener;
-    private long mPreviousStableOrientation;
-    private long mPreviousNodOrientation;
     private OrientationEvent mPreviousOrientationEvent;
 
-    private class OrientationEvent {
+    static enum State {
+        IDLE, SHAKE_TO_RIGHT, SHAKE_BACK_TO_LEFT, SHAKE_TO_LEFT, SHAKE_BACK_TO_RIGHT, GO_DOWN, BACK_UP, GO_UP, BACK_DOWN
+    }
+
+    private State mState = State.IDLE;
+    private long mLastStateChanged = -1;
+    private static final long STATE_TIMEOUT_NSEC = 1000 * 1000 * 1000;
+    private static final int SENSOR_RATE = SensorManager.SENSOR_DELAY_GAME;
+
+    private static class OrientationEvent {
         private float[] orientationValues;
         private long timestamp;
 
@@ -46,15 +53,11 @@ public class HeadGestureDetector implements SensorEventListener {
 
         for (Sensor sensor : sensors) {
             if (sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) {
-                // mSensorManager.registerListener(this, sensor,
-                // SensorManager.SENSOR_DELAY_UI);
-                mSensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL);
+                mSensorManager.registerListener(this, sensor, SENSOR_RATE);
             }
 
             if (sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-                // mSensorManager.registerListener(this, sensor,
-                // SensorManager.SENSOR_DELAY_UI);
-                mSensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL);
+                mSensorManager.registerListener(this, sensor, SENSOR_RATE);
             }
         }
     }
@@ -94,126 +97,105 @@ public class HeadGestureDetector implements SensorEventListener {
             return;
         }
 
-        SensorManager.getRotationMatrix(inR, I, accelerometerValues, magneticValues);
+        // state timeout check
+        if (event.timestamp - mLastStateChanged > STATE_TIMEOUT_NSEC && mState != State.IDLE) {
+            Log.d(Constants.TAG, "state timeouted");
+            mLastStateChanged = event.timestamp;
+            mState = State.IDLE;
+        }
 
+        SensorManager.getRotationMatrix(inR, I, accelerometerValues, magneticValues);
         SensorManager.remapCoordinateSystem(inR, SensorManager.AXIS_X, SensorManager.AXIS_Z, outR);
         SensorManager.getOrientation(outR, orientationValues);
 
         if (BuildConfig.DEBUG) {
-            Log.d(Constants.TAG, Arrays.toString(orientationValues));
+            // Log.d(Constants.TAG, Arrays.toString(orientationValues));
         }
 
-        float[] velocity = null;
+        float[] orientationVelocity = null;
         OrientationEvent currentOrientationEvent = new OrientationEvent(orientationValues.clone(), event.timestamp);
-        if (mPreviousOrientationEvent != null) {
-            velocity = getVelocity(mPreviousOrientationEvent, currentOrientationEvent);
+        if (mPreviousOrientationEvent == null) {
+            mPreviousOrientationEvent = currentOrientationEvent;
+            return;
         }
 
-        // if (velocity == null) {
+        // calc orientation velocity
+        orientationVelocity = getOrientationVelocity(mPreviousOrientationEvent, currentOrientationEvent);
         if (BuildConfig.DEBUG) {
-            Log.d(Constants.TAG, "V:" + Arrays.toString(velocity));
+            // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
         }
-        // }
 
         // check if glass is put on
-        if (!isPutOn(orientationValues)) {
+        if (!isPutOn(orientationValues, orientationVelocity)) {
             if (BuildConfig.DEBUG) {
                 Log.d(Constants.TAG, "Looks like glass is off?");
             }
-            mPreviousStableOrientation = -1;
-            mPreviousNodOrientation = -1;
         }
 
-        if (isStable(orientationValues)) {
-            Log.d(Constants.TAG, "isStable");
-            if (isConsideredNod(event.timestamp, mPreviousStableOrientation, mPreviousNodOrientation)) {
-                mPreviousNodOrientation = -1;
-                if (mListener != null) {
-                    mListener.onNod();
+        int maxVelocityIndex = maxAbsIndex(orientationVelocity);
+        if (isStable(orientationValues, orientationVelocity)) {
+            // Log.d(Constants.TAG, "isStable");
+        } else if (maxVelocityIndex == 1) {
+            if (orientationVelocity[1] > minShakeSpeed) {
+                if (mState == State.IDLE) {
+                    Log.d(Constants.TAG, "isNod");
+                    mState = State.GO_DOWN;
+                    mLastStateChanged = event.timestamp;
                 }
             }
-            mPreviousStableOrientation = event.timestamp;
-        } else if (isNod(orientationValues)) {
-            Log.d(Constants.TAG, "isNod");
-            mPreviousNodOrientation = event.timestamp;
-        } else if (isShakingToRight(velocity)) {
-            Log.d(Constants.TAG, "ShakingToRight");
-        } else if (isShakingToLeft(velocity)) {
-            Log.d(Constants.TAG, "ShakingToLeft");
+        } else if (maxVelocityIndex == 0) {
+            if (orientationVelocity[0] > minShakeSpeed) {
+                if (mState == State.IDLE) {
+                    Log.d(Constants.TAG, Arrays.toString(orientationValues));
+                    Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
+                    Log.d(Constants.TAG, "ShakingToRight");
+                    mState = State.SHAKE_TO_RIGHT;
+                    mLastStateChanged = event.timestamp;
+                }
+            } else if (orientationVelocity[0] < -minShakeSpeed) {
+                if (mState == State.IDLE) {
+                    Log.d(Constants.TAG, Arrays.toString(orientationValues));
+                    Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
+                    Log.d(Constants.TAG, "ShakingToLeft");
+                    mState = State.SHAKE_TO_LEFT;
+                    mLastStateChanged = event.timestamp;
+                }
+            }
         }
 
         mPreviousOrientationEvent = currentOrientationEvent;
     }
 
-    private static final float minNodSpeed = 0.001F;
-
-    private static final float minShakeSpeed = 0.001F;
+    private static final float minShakeSpeed = 0.01F;
 
     private static final float maxStableRadian = 0.10F;
-
-    private static final float nodBorderRadian = 0.20F;
 
     private static final float maxPutOnPitchRadian = 0.45F;
 
     private static final float maxPutOnRollRadian = 0.75F;
 
-    private static boolean isStable(float[] orientationValues) {
-        // TODO add more criterias
-        if (Math.abs(orientationValues[1]) < maxStableRadian) {
+    private static final float STABLE_ORIENTATION_VELOCITY = 0.0005F;
+
+    private static boolean isStable(float[] orientationValues, float[] orientationVelocity) {
+        if (Math.abs(orientationValues[1]) < maxStableRadian
+                && Math.abs(orientationVelocity[0]) < STABLE_ORIENTATION_VELOCITY
+                && Math.abs(orientationVelocity[1]) < STABLE_ORIENTATION_VELOCITY
+                && Math.abs(orientationVelocity[2]) < STABLE_ORIENTATION_VELOCITY) {
             return true;
         }
         return false;
     }
 
-    private static boolean isShakingToLeft(float[] velocity) {
-        if (velocity[2] > minShakeSpeed) {
-            return true;
-        }
-        return false;
-    }
-
-    private static boolean isShakingToRight(float[] velocity) {
-        if (velocity[2] < -minShakeSpeed) {
-            return true;
-        }
-        return false;
-    }
-
-    private static boolean isNod(float[] orientationValues) {
-        // TODO use velocity
-        if (orientationValues[1] > nodBorderRadian) {
-            return true;
-        }
-        return false;
-    }
-
-    private static boolean isPutOn(float[] orientationValues) {
+    private static boolean isPutOn(float[] orientationValues, float[] orientationVelocity) {
         if (orientationValues[1] < maxPutOnPitchRadian && Math.abs(orientationValues[2]) < maxPutOnRollRadian) {
             return true;
         }
         return false;
     }
 
-    private boolean isConsideredNod(long currentOrientation, long previousStable, long previousNod) {
-        if (currentOrientation < 0 || previousStable < 0 || previousNod < 0) {
-            return false;
-        }
-        if (previousNod <= previousStable || currentOrientation <= previousStable || currentOrientation <= previousNod) {
-            return false;
-        }
-        if (currentOrientation - previousStable > 500000000) {
-            if (BuildConfig.DEBUG) {
-                Log.d(Constants.TAG, "timeout:" + currentOrientation + "," + previousStable + ", "
-                        + (currentOrientation - previousStable) + " nanosecs ellapsed.");
-            }
-            return false;
-        }
-        return true;
-    }
-
-    private static float[] getVelocity(OrientationEvent e1, OrientationEvent e2) {
+    private static float[] getOrientationVelocity(OrientationEvent e1, OrientationEvent e2) {
         if (e1.timestamp > e2.timestamp) {
-            return getVelocity(e2, e1);
+            return getOrientationVelocity(e2, e1);
         }
 
         long diff = e2.timestamp - e1.timestamp;
@@ -231,5 +213,19 @@ public class HeadGestureDetector implements SensorEventListener {
             velocity[i] = (e2.orientationValues[i] - e1.orientationValues[i]) / diff;
         }
         return velocity;
+    }
+
+    private static int maxAbsIndex(float[] array) {
+        int n = array.length;
+        float maxValue = Float.MIN_VALUE;
+        int maxIndex = -1;
+        for (int i = 0; i < n; i++) {
+            float val = Math.abs(array[i]);
+            if (val > maxValue) {
+                maxValue = val;
+                maxIndex = i;
+            }
+        }
+        return maxIndex;
     }
 }
