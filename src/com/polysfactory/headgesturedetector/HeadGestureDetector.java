@@ -31,7 +31,6 @@ public class HeadGestureDetector implements SensorEventListener {
     private State mState = State.IDLE;
     private long mLastStateChanged = -1;
     private static final long STATE_TIMEOUT_NSEC = 1000 * 1000 * 1000;
-    private static final int SENSOR_RATE = SensorManager.SENSOR_DELAY_GAME;
 
     public HeadGestureDetector(Context context) {
         mSensorManager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
@@ -40,15 +39,22 @@ public class HeadGestureDetector implements SensorEventListener {
     private static final int[] REQUIRED_SENSORS = { Sensor.TYPE_MAGNETIC_FIELD, Sensor.TYPE_ACCELEROMETER,
             Sensor.TYPE_GYROSCOPE };
 
+    private static final int[] SENSOR_RATES = { SensorManager.SENSOR_DELAY_NORMAL, SensorManager.SENSOR_DELAY_NORMAL,
+            SensorManager.SENSOR_DELAY_NORMAL };
+
     public void start() {
-        List<Sensor> sensors = mSensorManager.getSensorList(Sensor.TYPE_ALL);
-        for (Sensor sensor : sensors) {
-            for (int sensorType : REQUIRED_SENSORS) {
-                if (sensor.getType() == sensorType) {
-                    mSensorManager.registerListener(this, sensor, SENSOR_RATE);
-                    break;
-                }
+        for (int i = 0; i < REQUIRED_SENSORS.length; i++) {
+            int sensor_type = REQUIRED_SENSORS[i];
+            Sensor sensor = null;
+            List<Sensor> sensors = mSensorManager.getSensorList(sensor_type);
+            if (sensors.size() > 1) {
+                // Google Glass has two gyroscopes: "MPL Gyroscope" and "Corrected Gyroscope Sensor". Try the later one.
+                sensor = sensors.get(1);
+            } else {
+                sensor = sensors.get(0);
             }
+            Log.d(Constants.TAG, "registered:" + sensor.getName());
+            mSensorManager.registerListener(this, sensor, SENSOR_RATES[i]);
         }
     }
 
@@ -67,6 +73,7 @@ public class HeadGestureDetector implements SensorEventListener {
 
     @Override
     public void onSensorChanged(SensorEvent event) {
+
         if (event.accuracy == SensorManager.SENSOR_STATUS_UNRELIABLE) {
             if (BuildConfig.DEBUG) {
                 // Log.w(Constants.TAG, "Unreliable event...");
@@ -75,8 +82,8 @@ public class HeadGestureDetector implements SensorEventListener {
 
         int sensorType = event.sensor.getType();
 
-        if (sensorType == Sensor.TYPE_GYROSCOPE) {
-            orientationVelocity = event.values.clone();
+        if (sensorType == Sensor.TYPE_MAGNETIC_FIELD) {
+            magneticValues = event.values.clone();
             return;
         }
 
@@ -88,60 +95,70 @@ public class HeadGestureDetector implements SensorEventListener {
             return;
         }
 
-        magneticValues = event.values.clone();
+        if (sensorType == Sensor.TYPE_GYROSCOPE) {
+            if (event.accuracy == SensorManager.SENSOR_STATUS_UNRELIABLE) {
+                Log.w(Constants.TAG, "Unreliable gyroscope event...");
+                return;
+            }
 
-        // state timeout check
-        if (event.timestamp - mLastStateChanged > STATE_TIMEOUT_NSEC && mState != State.IDLE) {
-            Log.d(Constants.TAG, "state timeouted");
-            mLastStateChanged = event.timestamp;
-            mState = State.IDLE;
-        }
+            orientationVelocity = event.values.clone();
 
-        if (BuildConfig.DEBUG) {
-            // Log.d(Constants.TAG, Arrays.toString(orientationValues));
-            // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
-        }
+            // state timeout check
+            if (event.timestamp - mLastStateChanged > STATE_TIMEOUT_NSEC && mState != State.IDLE) {
+                Log.d(Constants.TAG, "state timeouted");
+                mLastStateChanged = event.timestamp;
+                mState = State.IDLE;
+            }
 
-        // check if glass is put on
-        if (!isPutOn(orientationValues, orientationVelocity)) {
             if (BuildConfig.DEBUG) {
-                Log.d(Constants.TAG, "Looks like glass is off?");
+                // Log.d(Constants.TAG, Arrays.toString(orientationValues));
+                // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
             }
-        }
 
-        int maxVelocityIndex = maxAbsIndex(orientationVelocity);
-        if (isStable(orientationValues, orientationVelocity)) {
-            // Log.d(Constants.TAG, "isStable");
-        } else if (maxVelocityIndex == 0) {
-            if (orientationVelocity[0] < -MIN_MOVE_ANGULAR_VELOCITY) {
-                if (mState == State.IDLE) {
-                    Log.d(Constants.TAG, "isNod");
-                    mState = State.GO_DOWN;
-                    mLastStateChanged = event.timestamp;
-                    if (mListener != null) {
-                        mListener.onNod();
-                    }
+            // check if glass is put on
+            if (!isPutOn(orientationValues, orientationVelocity)) {
+                if (BuildConfig.DEBUG) {
+                    Log.d(Constants.TAG, "Looks like glass is off?");
                 }
             }
-        } else if (maxVelocityIndex == 1) {
-            if (orientationVelocity[1] < -MIN_MOVE_ANGULAR_VELOCITY) {
-                if (mState == State.IDLE) {
-                    // Log.d(Constants.TAG, Arrays.toString(orientationValues));
-                    // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
-                    mState = State.SHAKE_TO_RIGHT;
-                    mLastStateChanged = event.timestamp;
-                    if (mListener != null) {
-                        mListener.onShakeToRight();
+
+            int maxVelocityIndex = maxAbsIndex(orientationVelocity);
+            if (!isStable(orientationValues, orientationVelocity)) {
+                // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
+            }
+            if (isStable(orientationValues, orientationVelocity)) {
+                // Log.d(Constants.TAG, "isStable");
+            } else if (maxVelocityIndex == 0) {
+                if (orientationVelocity[0] < -MIN_MOVE_ANGULAR_VELOCITY) {
+                    if (mState == State.IDLE) {
+                        // Log.d(Constants.TAG, "isNod");
+                        mState = State.GO_DOWN;
+                        mLastStateChanged = event.timestamp;
+                        if (mListener != null) {
+                            mListener.onNod();
+                        }
                     }
                 }
-            } else if (orientationVelocity[1] > MIN_MOVE_ANGULAR_VELOCITY) {
-                if (mState == State.IDLE) {
-                    // Log.d(Constants.TAG, Arrays.toString(orientationValues));
-                    // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
-                    mState = State.SHAKE_TO_LEFT;
-                    mLastStateChanged = event.timestamp;
-                    if (mListener != null) {
-                        mListener.onShakeToLeft();
+            } else if (maxVelocityIndex == 1) {
+                if (orientationVelocity[1] < -MIN_MOVE_ANGULAR_VELOCITY) {
+                    if (mState == State.IDLE) {
+                        // Log.d(Constants.TAG, Arrays.toString(orientationValues));
+                        // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
+                        mState = State.SHAKE_TO_RIGHT;
+                        mLastStateChanged = event.timestamp;
+                        if (mListener != null) {
+                            mListener.onShakeToRight();
+                        }
+                    }
+                } else if (orientationVelocity[1] > MIN_MOVE_ANGULAR_VELOCITY) {
+                    if (mState == State.IDLE) {
+                        // Log.d(Constants.TAG, Arrays.toString(orientationValues));
+                        // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
+                        mState = State.SHAKE_TO_LEFT;
+                        mLastStateChanged = event.timestamp;
+                        if (mListener != null) {
+                            mListener.onShakeToLeft();
+                        }
                     }
                 }
             }
