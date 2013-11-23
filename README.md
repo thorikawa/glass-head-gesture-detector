@@ -33,6 +33,16 @@ public class MainActivity extends Activity implements OnHeadGestureListener {
     public void onNod() {
         // Do something
     }
+
+    @Override
+    public void onShakeToLeft() {
+        // Do something
+    }
+
+    @Override
+    public void onShakeToRight() {
+        // Do something
+    }
 }
 ```
 

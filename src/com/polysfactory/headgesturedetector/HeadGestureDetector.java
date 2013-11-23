@@ -1,6 +1,5 @@
 package com.polysfactory.headgesturedetector;
 
-import java.util.Arrays;
 import java.util.List;
 
 import android.content.Context;
@@ -19,28 +18,43 @@ public class HeadGestureDetector implements SensorEventListener {
     private float[] orientationValues = new float[3];
     private float[] magneticValues = new float[3];
     private float[] accelerometerValues = new float[3];
+    private float[] orientationVelocity = new float[3];
 
     private SensorManager mSensorManager;
 
     private OnHeadGestureListener mListener;
-    private long mPreviousStableOrientation;
-    private long mPreviousNodOrientation;
+
+    static enum State {
+        IDLE, SHAKE_TO_RIGHT, SHAKE_BACK_TO_LEFT, SHAKE_TO_LEFT, SHAKE_BACK_TO_RIGHT, GO_DOWN, BACK_UP, GO_UP, BACK_DOWN
+    }
+
+    private State mState = State.IDLE;
+    private long mLastStateChanged = -1;
+    private static final long STATE_TIMEOUT_NSEC = 1000 * 1000 * 1000;
 
     public HeadGestureDetector(Context context) {
         mSensorManager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
     }
 
+    private static final int[] REQUIRED_SENSORS = { Sensor.TYPE_MAGNETIC_FIELD, Sensor.TYPE_ACCELEROMETER,
+            Sensor.TYPE_GYROSCOPE };
+
+    private static final int[] SENSOR_RATES = { SensorManager.SENSOR_DELAY_NORMAL, SensorManager.SENSOR_DELAY_NORMAL,
+            SensorManager.SENSOR_DELAY_NORMAL };
+
     public void start() {
-        List<Sensor> sensors = mSensorManager.getSensorList(Sensor.TYPE_ALL);
-
-        for (Sensor sensor : sensors) {
-            if (sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) {
-                mSensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI);
+        for (int i = 0; i < REQUIRED_SENSORS.length; i++) {
+            int sensor_type = REQUIRED_SENSORS[i];
+            Sensor sensor = null;
+            List<Sensor> sensors = mSensorManager.getSensorList(sensor_type);
+            if (sensors.size() > 1) {
+                // Google Glass has two gyroscopes: "MPL Gyroscope" and "Corrected Gyroscope Sensor". Try the later one.
+                sensor = sensors.get(1);
+            } else {
+                sensor = sensors.get(0);
             }
-
-            if (sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-                mSensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI);
-            }
+            Log.d(Constants.TAG, "registered:" + sensor.getName());
+            mSensorManager.registerListener(this, sensor, SENSOR_RATES[i]);
         }
     }
 
@@ -59,97 +73,136 @@ public class HeadGestureDetector implements SensorEventListener {
 
     @Override
     public void onSensorChanged(SensorEvent event) {
+
         if (event.accuracy == SensorManager.SENSOR_STATUS_UNRELIABLE) {
             if (BuildConfig.DEBUG) {
-                Log.w(Constants.TAG, "Unreliable event...");
+                // Log.w(Constants.TAG, "Unreliable event...");
             }
         }
 
-        switch (event.sensor.getType()) {
-        case Sensor.TYPE_MAGNETIC_FIELD:
+        int sensorType = event.sensor.getType();
+
+        if (sensorType == Sensor.TYPE_MAGNETIC_FIELD) {
             magneticValues = event.values.clone();
-            break;
-        case Sensor.TYPE_ACCELEROMETER:
-            accelerometerValues = event.values.clone();
-            break;
+            return;
         }
 
-        if (magneticValues != null && accelerometerValues != null) {
-
+        if (sensorType == Sensor.TYPE_ACCELEROMETER) {
+            accelerometerValues = event.values.clone();
             SensorManager.getRotationMatrix(inR, I, accelerometerValues, magneticValues);
-
             SensorManager.remapCoordinateSystem(inR, SensorManager.AXIS_X, SensorManager.AXIS_Z, outR);
             SensorManager.getOrientation(outR, orientationValues);
+            return;
+        }
 
-            if (BuildConfig.DEBUG) {
-                Log.d(Constants.TAG, Arrays.toString(orientationValues));
+        if (sensorType == Sensor.TYPE_GYROSCOPE) {
+            if (event.accuracy == SensorManager.SENSOR_STATUS_UNRELIABLE) {
+                Log.w(Constants.TAG, "Unreliable gyroscope event...");
+                return;
             }
 
-            if (!isPutOn(orientationValues)) {
+            orientationVelocity = event.values.clone();
+
+            // state timeout check
+            if (event.timestamp - mLastStateChanged > STATE_TIMEOUT_NSEC && mState != State.IDLE) {
+                Log.d(Constants.TAG, "state timeouted");
+                mLastStateChanged = event.timestamp;
+                mState = State.IDLE;
+            }
+
+            if (BuildConfig.DEBUG) {
+                // Log.d(Constants.TAG, Arrays.toString(orientationValues));
+                // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
+            }
+
+            // check if glass is put on
+            if (!isPutOn(orientationValues, orientationVelocity)) {
                 if (BuildConfig.DEBUG) {
                     Log.d(Constants.TAG, "Looks like glass is off?");
                 }
-                mPreviousStableOrientation = -1;
-                mPreviousNodOrientation = -1;
             }
 
-            if (isStable(orientationValues)) {
-                if (isConsideredNod(event.timestamp, mPreviousStableOrientation, mPreviousNodOrientation)) {
-                    mPreviousNodOrientation = -1;
-                    if (mListener != null) {
-                        mListener.onNod();
+            int maxVelocityIndex = maxAbsIndex(orientationVelocity);
+            if (!isStable(orientationValues, orientationVelocity)) {
+                // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
+            }
+            if (isStable(orientationValues, orientationVelocity)) {
+                // Log.d(Constants.TAG, "isStable");
+            } else if (maxVelocityIndex == 0) {
+                if (orientationVelocity[0] < -MIN_MOVE_ANGULAR_VELOCITY) {
+                    if (mState == State.IDLE) {
+                        // Log.d(Constants.TAG, "isNod");
+                        mState = State.GO_DOWN;
+                        mLastStateChanged = event.timestamp;
+                        if (mListener != null) {
+                            mListener.onNod();
+                        }
                     }
                 }
-                mPreviousStableOrientation = event.timestamp;
-            } else if (isNod(orientationValues)) {
-                mPreviousNodOrientation = event.timestamp;
+            } else if (maxVelocityIndex == 1) {
+                if (orientationVelocity[1] < -MIN_MOVE_ANGULAR_VELOCITY) {
+                    if (mState == State.IDLE) {
+                        // Log.d(Constants.TAG, Arrays.toString(orientationValues));
+                        // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
+                        mState = State.SHAKE_TO_RIGHT;
+                        mLastStateChanged = event.timestamp;
+                        if (mListener != null) {
+                            mListener.onShakeToRight();
+                        }
+                    }
+                } else if (orientationVelocity[1] > MIN_MOVE_ANGULAR_VELOCITY) {
+                    if (mState == State.IDLE) {
+                        // Log.d(Constants.TAG, Arrays.toString(orientationValues));
+                        // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
+                        mState = State.SHAKE_TO_LEFT;
+                        mLastStateChanged = event.timestamp;
+                        if (mListener != null) {
+                            mListener.onShakeToLeft();
+                        }
+                    }
+                }
             }
         }
     }
 
-    private static final float maxStableRadian = 0.10F;
+    private static final float MIN_MOVE_ANGULAR_VELOCITY = 1.00F;
 
-    private static final float nodBorderRadian = 0.20F;
+    private static final float MAX_STABLE_RADIAN = 0.10F;
 
-    private static final float maxPutOnPitchRadian = 0.45F;
+    private static final float MAX_PUT_ON_PITCH_RADIAN = 0.45F;
 
-    private static final float maxPutOnRollRadian = 0.75F;
+    private static final float MAX_PUT_ON_ROLL_RADIAN = 0.75F;
 
-    private static boolean isStable(float[] orientationValues) {
-        if (Math.abs(orientationValues[1]) < maxStableRadian) {
+    private static final float STABLE_ANGULAR_VELOCITY = 0.10F;
+
+    private static boolean isStable(float[] orientationValues, float[] orientationVelocity) {
+        if (Math.abs(orientationValues[1]) < MAX_STABLE_RADIAN
+                && Math.abs(orientationVelocity[0]) < STABLE_ANGULAR_VELOCITY
+                && Math.abs(orientationVelocity[1]) < STABLE_ANGULAR_VELOCITY
+                && Math.abs(orientationVelocity[2]) < STABLE_ANGULAR_VELOCITY) {
             return true;
         }
         return false;
     }
 
-    private static boolean isNod(float[] orientationValues) {
-        if (orientationValues[1] > nodBorderRadian) {
+    private static boolean isPutOn(float[] orientationValues, float[] orientationVelocity) {
+        if (orientationValues[1] < MAX_PUT_ON_PITCH_RADIAN && Math.abs(orientationValues[2]) < MAX_PUT_ON_ROLL_RADIAN) {
             return true;
         }
         return false;
     }
 
-    private static boolean isPutOn(float[] orientationValues) {
-        if (orientationValues[1] < maxPutOnPitchRadian && Math.abs(orientationValues[2]) < maxPutOnRollRadian) {
-            return true;
-        }
-        return false;
-    }
-
-    private boolean isConsideredNod(long currentOrientation, long previousStable, long previousNod) {
-        if (currentOrientation < 0 || previousStable < 0 || previousNod < 0) {
-            return false;
-        }
-        if (previousNod <= previousStable || currentOrientation <= previousStable || currentOrientation <= previousNod) {
-            return false;
-        }
-        if (currentOrientation - previousStable > 500000000) {
-            if (BuildConfig.DEBUG) {
-                Log.d(Constants.TAG, "timeout:" + currentOrientation + "," + previousStable + ", "
-                        + (currentOrientation - previousStable) + " nanosecs ellapsed.");
+    private static int maxAbsIndex(float[] array) {
+        int n = array.length;
+        float maxValue = Float.MIN_VALUE;
+        int maxIndex = -1;
+        for (int i = 0; i < n; i++) {
+            float val = Math.abs(array[i]);
+            if (val > maxValue) {
+                maxValue = val;
+                maxIndex = i;
             }
-            return false;
         }
-        return true;
+        return maxIndex;
     }
 }
