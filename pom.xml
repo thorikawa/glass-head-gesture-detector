@@ -23,7 +23,6 @@
 
 	<name>Head Gesture Detector for Google Glass</name>
 	<description>Google Glass specific library for head gesture detection.</description>
-	<packaging>apklib</packaging>
 
 	<scm>
 		<url>https://github.com/thorikawa/glass-head-gesture-detector</url>
