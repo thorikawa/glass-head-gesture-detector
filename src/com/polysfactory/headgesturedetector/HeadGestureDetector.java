@@ -75,9 +75,7 @@ public class HeadGestureDetector implements SensorEventListener {
     public void onSensorChanged(SensorEvent event) {
 
         if (event.accuracy == SensorManager.SENSOR_STATUS_UNRELIABLE) {
-            if (BuildConfig.DEBUG) {
-                // Log.w(Constants.TAG, "Unreliable event...");
-            }
+            // Log.w(Constants.TAG, "Unreliable event...");
         }
 
         int sensorType = event.sensor.getType();
@@ -97,8 +95,8 @@ public class HeadGestureDetector implements SensorEventListener {
 
         if (sensorType == Sensor.TYPE_GYROSCOPE) {
             if (event.accuracy == SensorManager.SENSOR_STATUS_UNRELIABLE) {
-                Log.w(Constants.TAG, "Unreliable gyroscope event...");
-                return;
+                // Log.w(Constants.TAG, "Unreliable gyroscope event...");
+                // return;
             }
 
             orientationVelocity = event.values.clone();
@@ -110,16 +108,12 @@ public class HeadGestureDetector implements SensorEventListener {
                 mState = State.IDLE;
             }
 
-            if (BuildConfig.DEBUG) {
-                // Log.d(Constants.TAG, Arrays.toString(orientationValues));
-                // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
-            }
+            // Log.d(Constants.TAG, Arrays.toString(orientationValues));
+            // Log.d(Constants.TAG, "V:" + Arrays.toString(orientationVelocity));
 
             // check if glass is put on
             if (!isPutOn(orientationValues, orientationVelocity)) {
-                if (BuildConfig.DEBUG) {
-                    Log.d(Constants.TAG, "Looks like glass is off?");
-                }
+                Log.d(Constants.TAG, "Looks like glass is off?");
             }
 
             int maxVelocityIndex = maxAbsIndex(orientationVelocity);
