@@ -4,7 +4,6 @@ Head Gesture Detector for Google Glass
 Google Glass specific library for head gesture detection.
 
 ## Download
---------
 
 Download [the latest JAR][1] or grab via Maven:
 ```xml
