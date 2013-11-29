@@ -1,9 +1,25 @@
-Head Gesture Detector
+Head Gesture Detector for Google Glass
 ===========
 
 Google Glass specific library for head gesture detection.
 
-### Usage
+## Download
+--------
+
+Download [the latest JAR][1] or grab via Maven:
+```xml
+<dependency>
+  <groupId>com.polysfactory.headgesturedetector</groupId>
+  <artifactId>headgesturedetector</artifactId>
+  <version>(insert latest version)</version>
+</dependency>
+```
+or Gradle:
+```groovy
+compile 'com.polysfactory.headgesturedetector:headgesturedetector:(insert latest version)'
+```
+
+## Usage
 ```
 public class MainActivity extends Activity implements OnHeadGestureListener {
 
@@ -62,3 +78,5 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ```
+
+[1]: http://repository.sonatype.org/service/local/artifact/maven/redirect?r=central-proxy&g=com.polysfactory.headgesturedetector&a=headgesturedetector&v=LATEST
